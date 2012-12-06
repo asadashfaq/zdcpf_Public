@@ -1,0 +1,819 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\documentclass[english,twoside,a4paper,11pt]{article}
+\usepackage[USenglish]{babel}
+\usepackage[pdftex]{graphicx}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{url}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+ \setcounter{tocdepth}{0}
+ \setcounter{secnumdepth}{5}
+ \setcounter{totalnumber}{6}      % anzahl der floats pro seite
+ \setcounter{topnumber}{6}
+ \setcounter{bottomnumber}{6}
+\numberwithin{equation}{section}
+ \renewcommand{\topfraction}{1.0}
+ \renewcommand{\bottomfraction}{1.0}
+ \renewcommand{\textfraction}{0.0}
+ \fboxrule0.25mm
+ \unitlength 1cm
+ %\voffset -0.75in
+ %\hoffset -1in
+%%%\headincludeon
+%%%\headseplineon
+ \pagestyle{headings}
+ \textheight 230mm
+ \textwidth 150mm
+ \topmargin 0mm
+ \addtolength\headsep{3mm}
+ \oddsidemargin 10mm
+ \evensidemargin 10mm
+ \parindent 3mm
+ \parskip1.5ex plus 0.5ex minus 0.3ex
+
+\newenvironment{myindentpar}[1]%
+{\begin{list}{}%
+         {\setlength{\leftmargin}{#1}}%
+         \item[]%
+}
+{\end{list}}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{document}
+
+\thispagestyle{empty}
+\begin{center}
+\begin{Large}
+DC power flow -- internal documentation \\
+\today\\
+\end{Large}
+{\it Rolando A Rodriguez and Sarah Becker with help from Gorm Andresen and Uffe Poulsen}
+\end{center}
+
+The following document attempts to explain the problem of the
+constrained DC power flow, and the solutions implemented in the
+group's code, as well as this code's algorithm. 
+
+\section{Power flow across a fully renewable Europe}
+
+We face the task of describing the flow of power across various nodes
+in a network. These nodes represent power grids (regions or countries)
+connected by high voltage transmission lines. For simplicity, we
+choose to model these flows considering only Kirchhoff's laws. This
+means that, based on the power generation and consumption (load) in
+each node, we look for the solution to the problem how power should be
+transmitted from sources to sinks which minimizes the necessary
+transmission capacities. 
+
+This approach neglects market influences, i.e. the fact that power
+exchanges from country to country are directly controlled using power
+electronic devices, such as FACTS or HVDC lines. We expect that such
+economic agreements between countries lead to
+shortest-path flows, which is not the optimal solution if one is
+interested in minimizing the transmission capacities needed.
+
+In particular, we are interested in a fully renewable scenario, where
+the overall load is (on average) completely covered by generation of
+wind and solar energy. For a realistic model, we use actual weather
+data, which is converted into wind and solar energy generation and
+then normalized to match the average load. For details about the load
+and generation time series, see Dominik Heide's PhD thesis. The
+important parameters in this context are $\alpha$, which is the
+percentage of wind energy in the mix, and $\gamma$, which is a global
+factor. Together with the load time series, we get from that a time
+series of power mismatches for each country, denoted by
+\begin{equation}
+\begin{split}
+\Delta &= \text{renewable generation} - \text{load}\\
+&= \gamma\,(\alpha\cdot \text{wind power}+ (1-\alpha)\cdot\text{solar
+  power}) - \text{load}.
+\label{eq:powermismatch}
+\end{split}
+\end{equation}
+From the power mismatches, we want to determine the
+power flows across Europe, subject to various outer conditions like
+transmission line capacities or different $\alpha$ and $\gamma$ values.
+
+\section[From AC to DC]{The DC power flow as a simplification of the AC power flow}
+
+Power transmission in large networks can be precisely described by AC
+power flow, which accounts for voltage drops, phase differences, and
+active and reactive power. Each of the $N$ buses (nodes) of the
+system is described by four variables: real power mismatch $P$,
+reactive power mismatch
+$Q$, the voltage $V$ and the voltage phase angle $\delta$. Depending
+on whether a bus is a generator bus, a load bus, or a reference
+(slack) bus, different variables are used in engineering. As
+capacitive lines require energizing before being able to transmit
+power, and inductive loads consume reactive power, the values of $P$,
+$Q$, $V$, and $\delta$ will vary throughout the network. Solving the
+power flow and finding the power levels of buses and lines requires
+solving two sets of equations, one for the active and one for the
+reactive power.
+\begin{align}
+P_i&=\sum_{k=1}^N |V_i|
+|V_k|(G_{ik}\cos\delta_{ik}+B_{ik}\sin\delta_{ik}) 
+\label{eq:realAC} \\
+Q_i&=\sum_{k=1}^N |V_i|
+|V_k|(G_{ik}\sin\delta_{ik}-B_{ik}\cos\delta_{ik}) 
+\label{eq:imagAC} 
+\end{align}
+where $\delta_{ik}=\delta_i-\delta_k$ is the difference of the phase
+angles at nodes $i$ and $k$, and $G_{ik}$ and $B_{ik}$ are the
+real and imaginary parts of the admittance of the links connecting
+nodes $i$ and $k$, respectively. The consideration of reactive power
+and voltage is integral for transmission system operators (TSOs) in
+order to detect instability in transmission and distribution systems,
+but complicates the solution significantly. These equations are
+usually solved using the Newton-Raphson method.
+
+For our purposes, we assume a stable system with stable voltage
+levels and no active or reactive power losses. This means that the
+power mismatch in each node is equal to its real part, i.e.
+\begin{align*}
+\Delta_i= P_i,\quad Q_i = 0
+\end{align*}
+In this case, we can
+simplify the AC power flow to a DC power flow: Essentially, our
+assumptions imply that the voltage levels throughout the grid are
+constant, so that $V_i=V_k\equiv 1$, that there are no real components
+in the impedance of the lines (that is, they have resistances
+$R_{ik}=0$ such that $G_{ik} =0$), and the difference between the
+phase angles is sufficiently small so that $\sin(\delta_{ik} )\approx
+\delta_{ik}$. This means that we can forget about \eqref{eq:imagAC}, and
+\eqref{eq:realAC} is simplified to
+\begin{align}
+\Delta_i=\sum_{k\neq i}^N B_{ik}(\delta_i-\delta_k)
+=\sum_{k\neq i}^N B_{ik}\delta_i - \sum_{k\neq i}^N B_{ik}\delta_k
+\equiv \sum L_{ik}\delta_k,
+\label{eq:DC}
+\end{align}
+if we define
+\begin{align*}
+L_{ik} =\begin{cases} -B_{ik} & \text{ if $i\neq k$} \\
+ \sum_{k\neq i}B_{ik} & \text{ if $i = k$}
+\end{cases}
+\end{align*}
+In our case where $B_{ik}=1$, the $L$ matrix is equal to the
+Laplace matrix
+\begin{align*}
+L=K K^T
+\end{align*}
+where K is the incidence matrix of the network with the elements
+\begin{align*}
+K_{nl} = \begin{cases}
+\phantom{-} 1 & \text{ if link $l$ starts at node $n$} \\
+-1 & \text{ if link $l$ ends at node $n$} \\
+\phantom{-} 0 & \text{ otherwise}
+\end{cases}
+\end{align*}
+The values of $\delta_n$ are now obtained from \eqref{eq:DC}. They
+define the flows between two nodes, as the power flow $F_l$ along link
+$l$ that connects nodes $i$ and $k$ is given by 
+\begin{align*}
+F_l =B_{ik} (\delta_i-\delta_k ),
+\end{align*}
+which, in the case where all the lines have $B_{ik} =1$, is reduced to
+\begin{align}
+F= K^T\delta
+\label{eq:flow}
+\end{align}
+To sum up, the problem is now to solve for $\delta$ in \eqref{eq:DC}
+in order to find the flows using \eqref{eq:flow} for given $\Delta_i$ and
+network topology. As B does has one eigenvalue zero, this is only
+possible for $\Delta$s that obey the constraint $\sum_i
+\Delta_i=0$. Additionally, the solution is only unique up to a global
+phase, i.e. one can fix e.g. $\delta_0=0$. Alternatively, the
+Moore-Penrose pseudo inverse can be obtained for $L$, to solve
+directly, the latter option saving calculation time in very large
+systems. Confer Dominik Heide's dissertation for more details.
+
+\section{The minimum dissipation principle}
+
+We now want to include constraints on the flows that model the finite
+transmission capacity of a power line, i.e. inequalities of the form
+\begin{align}
+F=K^T \delta \leq h
+\label{eq:flowconstr}
+\end{align}
+Additionally, we want to treat cases in which 
+\begin{align}
+\sum_i \Delta_i\neq 0.
+\label{eq:powerdelta}
+\end{align}
+This is obviously not possible in
+our setting so far, since there are no solutions at all if $\sum_i
+\Delta_i\neq 0$ (no surprise here -- that would violate the conservation of
+energy), and if there are solutions, they are unique up to a global
+phase and do not allow for further constraints on the flows. What we
+need here is a reformulation of the problem that allows for the
+inclusion of \eqref{eq:flowconstr} and \eqref{eq:powerdelta}. In this
+section, we will restate the problem, and in the next section, we will
+include \eqref{eq:flowconstr} and \eqref{eq:powerdelta}.
+
+While we have toyed with the idea of changing the reactances of
+individual lines to regulate the transmission limits, we found that
+the problem is easier to solve if we state the power in the nodes
+directly as a function of the flows, and forget about
+$\delta$. Eq. \eqref{eq:DC} then simply becomes
+\begin{align}
+KF= \Delta
+\label{eq:DC2}
+\end{align}
+We have now passed from a system in $N$ (number of nodes) variables to
+a system of $L$ (number of links) variables. For a generic power
+network, $L$ will larger than $N$, and therefore, the solution of this
+problem is no longer unique. Additional solutions arise because
+Eq. \eqref{eq:DC2} can be satisfied by flows that have, in addition to
+the ``net transporting current'' that takes power from node to node,
+``circular components'' that flow in a round. Fortunately, it is
+possible to make it unique and identical to the DC power flow
+situation by requiring that the square of the flows be minimal. This
+eliminates the circular flows. It is called the minimum dissipation
+principle. We show that the solution
+to Eq. \eqref{eq:DC2} together with the minimization is indeed the
+same as the one of Eq. \eqref{eq:DC} using a vector of $N$ Lagrange
+multipliers $\lambda$. We are looking for the minimal flows under the
+constraint that the power is transported from the sources to the sinks.
+\begin{align}
+\min_F F^T F -\lambda^T (KF-\Delta).
+\label{eq:lagr}
+\end{align}
+It's easy to see the minimum by completing the squares in $F:$
+\begin{align*}
+\left(F- \frac{1}{2}K^T \lambda\right)^T 
+\left(F- \frac{1}{2}K^T \lambda\right)
+=F^T F-\lambda^T KF+ \frac{1}{4}\lambda^T K K^T \lambda
+\end{align*}
+so that Eq. \eqref{eq:lagr} becomes
+\begin{align*}
+\min_F
+\left(F- \frac{1}{2}K^T \lambda\right)^T 
+\left(F- \frac{1}{2}K^T \lambda\right)-
+\frac{1}{4}\lambda^T K K^T \lambda  +\lambda^T \Delta
+\end{align*}
+whose minimum evidently lies at $F=1/2 K^T \lambda$, i.e.
+the minimizing flows fulfill an equation of the same form as
+Eq. \eqref{eq:DC} (the flow is a so-called potential flow). This means
+that, as long as we minimize the square 
+of the flows $F^T F$ while ensuring that $KF= \Delta$, we are describing
+the DC power flow, or, in other words, the two formulations are
+equivalent.
+
+We now turn to the extension of the problem to cases where $\sum_i
+\Delta \neq 0$. In order to achieve that, we introduce {\it balancing},
+i.e. extra power generation when there is less renewable generation
+than load, and {\it curtailment}, i.e. the shedding of
+overproduction. At the same time, we include the constraints
+on the flows. Computationally speaking, this is a quadratic
+programming optimization problem. Numerical solutions are implemented
+in a number of packages, developed for MATLAB, C and Python. % We
+% describe in the following how the problem must be stated for the
+% \texttt{CVXOPT} module for Python. Other implementations are quite
+% similar. Along the way, we will come across the precise definitions of
+% curtailment and balancing.
+We describe in the following how it is done with C modules generated
+by \texttt{cvxgen}.
+
+\section{Balancing and flow calculation with \texttt{cvxgen}}
+
+To calculate balancing needs and occurring flows, we employ the
+physical DC approximation to the full AC power flow. It is valid as
+long as the network is in a stable state, i.e. no significant voltage
+or phase shifts between the nodes, and for a network in which line
+resistances can be neglected. It has the obvious advantage that it
+minimizes the total dissipation in the network, i.e. the power losses,
+and the necessary flows.
+
+We first take a look at a situation in which there is no global
+mismatch between renewable energy generation and load.
+\begin{align}
+\sum_{i=1}^N \Delta_i =0
+\label{eq:nomis}
+\end{align}
+For a network with unconstrained line capacities (``copper flow''),
+the DC power flow is then given as that set of flows $F_l$ that
+fulfills 
+\begin{align}
+\nonumber &KF=\Delta \qquad\qquad\quad\\
+\text{ and minimizes } &\sum_{l=1}^L F_l^2.
+\label{eq:minf}
+\end{align}
+Due to condition \eqref{eq:nomis}, the existence of such a solution is
+guaranteed, and the minimization \eqref{eq:minf} makes it unique. 
+
+Now we generalize this to the case where we have a global mismatch,
+which has to be compensated by balancing. The total balancing can be
+expressed as\footnote{$(x)_-=\max\{-x,0\}$ denotes the
+  negative part of a quantity $x$.}
+\begin{align*}
+B_{\rm tot}=\sum_{i=1}^N(\Delta_i-(K\cdot F)_i)_-=\sum_{i=1}^N B_i
+\end{align*}
+The balancing need $B_i$ is what is potentially left of a negative
+mismatch $\Delta_i$ after it has been reduced by the net imports
+$-(K\cdot F)_i$. We use the flows to minimize $B_{\rm tot}$. In other
+words, we make the system use as much of the 
+renewable generation as possible. This is our top priority.
+
+As a secondary objective, we still want to minimize dissipation. We do
+so in a second step, where we minimize the flows keeping the total
+balancing at its minimal value found in the first step:
+\begin{align*}
+\min_{\sum_{i=1}^N (\Delta_i-(K\cdot F)_i)_- \leq B_{\rm min}}\sum_{l=1}^L F_l^2
+\end{align*}
+This ensures that we arrive at the minimal flows that make optimal
+sharing of renewables possible.
+
+If the line capacities are constrained by (possibly direction
+dependent) capacities, $h_{-l}\leq F_l\leq h_l$, these constraints are
+included in the two minimizations, and we have
+\begin{align*}
+\text{Step 1: }&\qquad \:\:
+\min_{h_{-l}\leq F_l \leq h_l} \qquad \:\: 
+\sum_{i=1}^N(\Delta_i-(K\cdot F)_i)_- = B_{\rm min}\\
+\text{Step 2: }&
+\min_{\substack{h_{-l}\leq F_l \leq h_l \\ \sum_{i=1}^N (\Delta_i-(K\cdot F)_i)_-
+  \leq B_{\rm min}}} \sum_{l=1}^L F_l^2
+\end{align*}
+
+\section{Balancing, flow and storage calculation with \texttt{gurobi}}
+
+...comes as soon as I understand it.
+
+\section{Other tested implementations}
+
+\texttt{CPLEX} -- commercial, apparently a predecessor of gurobi,
+slower
+
+\texttt{cvxopt} -- python-internal module, easy, but very slow. In
+addition, defining a hierarchy of goal just by giving the higher
+priority cost function a higher prefactor wasn't such a good idea --
+in the end, the routine just ignored the secondary targets because
+their influence on the cost function was too low.
+
+% \section{Implementing balancing and curtailment}
+% \label{sec:3}
+
+% The quadratic programming solver \texttt{CVXOPT} (from ConVeX
+% OPTimisation) requires the information to be stored in a specifically
+% shaped matrices. The form and values of these matrices help define the
+% scenario and problem that one wants to optimize. The standard format of
+% a quadratic programming problem is
+% \begin{align}
+% C&=x P x+q x \text{ -- the cost function to be minimized}
+% \label{eq:cost} \\
+% A x&=b \text{ -- the equality constraint}
+% \label{eq:eq}\\
+% G x &\leq h \text{ -- the inequality constraint}
+% \label{eq:ieq}
+% \end{align}
+% where $x$ is the variable that is varied and the other entities are
+% parameters of the specific problem (don't confuse the cost matrix $P$
+% with the power we talked about earlier!). In our case,
+% $x$ does not only consist of the flows $F_l$, but we also want to
+% minimize balancing $B_n$ and curtailment $R_n$ at each node. This
+% means that our $x$ looks like
+% \begin{align*}
+% x=\left(\begin{matrix}
+% F_1\\
+% \vdots\\
+% F_L\\
+% B_1\\
+% \vdots\\
+% B_N\\
+% R_1\\
+% \vdots\\
+% R_N
+% \end{matrix}
+% \right)
+% \end{align*}
+
+% Let's first take a look at the cost function. The quadratic parameter
+% $P$ is a $(L+2N)\times(L+2N)$ matrix. It is simply chosen to be
+% diagonal, since there is no distinguished link or node in the network
+% and we do not want to introduce any ``synergy effects'' between flows,
+% balancing and curtailment. We thus have:
+% \begin{align*}
+% P=\left(
+% \begin{matrix}
+% P_F & 0 & 0 \\
+% 0 & P_B & 0 \\
+% 0 & 0 & P_R
+% \end{matrix}
+% \right)
+% \end{align*}
+% Upon examination, we found that in Dominik Heide's code, curtailment is
+% often shared between nodes. That is, in the event of a global positive
+% mismatch where node $i$ has an overproduction of $R$ and node $j$ is
+% perfectly balanced, Dominik's algorithm will have node $i$ export some
+% of its overproduction to node $j$, and both will curtail amounts
+% $0.5\cdot R$. This behavior is of course not desired since it leads to
+% additional flows which are completely superfluous. The reason for
+% these results is that Dominik minimized the square of the balancing
+% and treated curtailment just as negative balancing. If you do this,
+% however, an even distribution of curtailment is favored, leading to
+% transport of power which is eventually shedded. This is why we treat
+% curtailment and balancing separately, and this is also the reason why
+% the quadratic parameter $P_R$ is set to zero.
+
+% The cost of curtailment is instead accounted for in the linear
+% term. Again, since no nodes or links are distinguished, it is chosen
+% to look like
+% \begin{align*}
+% q=\left(
+% \begin{matrix}
+% q_F \\
+% q_B \\
+% q_R
+% \end{matrix}
+% \right)
+% \end{align*}
+
+% Next, we build the equality constraint matrix $A$. It should
+% incorporate the DC power flow equation Eq. \eqref{eq:DC2}, which must
+% now be modified to include balancing and curtailment. It should now
+% express
+% \begin{align*}
+% \text{renewable generation}+
+% \text{balancing}=\text{load}+\text{curtailment} + \text{net outflow}.
+% \end{align*}
+% Since load and generation are, in fact, our input parameters, they
+% form the outer constraint on our system, and we have
+% \begin{align*}
+% (\text{renewable generation}-\text{load})_n=\Delta_n
+% =\sum_l F_{ln}-B_n+R_n.
+% \end{align*}
+% This means that $A$ is given by
+% \begin{align*}
+% A=\left(
+% \begin{matrix}
+% K & -\mathbb{I}_{N\times N} & \mathbb{I}_{N\times N}.
+% \end{matrix}
+% \right)
+% \end{align*}
+% and $b=\Delta$ by the nodal mismatch of generation and load.
+
+% Finally, the inequality constraints must follow the form $G x\leq
+% h$. Remembering that flows are directed and that the link capacity
+% can have different values in either direction, the flow component of
+% the constraints must have the form
+% \begin{align}
+% \left(
+% \begin{matrix}
+% 1 & 0 & \hdots \\
+% -1 & 0 & \hdots \\
+% 0 & 1  & \hdots \\
+% 0 & -1  & \hdots \\
+% \vdots & \vdots & \ddots 
+% \end{matrix}
+% \right)
+% \left(
+% \begin{matrix}
+% F_1 \\
+% F_2 \\
+% \vdots \\
+% \vdots
+% \end{matrix}
+% \right)
+% \leq
+% \left(
+% \begin{matrix}
+% h_1 \\
+% h_{-1} \\
+% h_2 \\
+% h_{-2}\\
+% \vdots
+% \end{matrix}
+% \right),
+% \label{eq:capc}
+% \end{align}
+% where $h_l$ is the capacity flowing in the positive direction along
+% link $l$ and $h_{-l}$ is the capacity flowing in the opposite
+% direction, with $h_l, h_{-l} \geq 0$.
+
+% Both the curtailment and the balancing are expressed in positive
+% values, so that both have to limited with the condition that $B_n, R_n
+% \geq 0$. This implies that the constraint G matrix in the
+% balancing and section is defined as
+% \begin{align}
+% -\mathbb{I} B \leq 0
+% \label{eq:bal+}
+% \end{align}
+
+% For the curtailment, we have the additional constraint that there
+% should be no transported curtailment at a node, i.e. it must be
+% limited to the local excess power. Together with the positivity, this
+% means for the curtailment part of $G$:
+% \begin{align}
+% \left(
+% \begin{matrix}
+% 1 & 0 & \hdots \\
+% -1 & 0 & \hdots \\
+% 0 & 1  & \hdots \\
+% 0 & -1  & \hdots \\
+% \vdots & \vdots & \ddots 
+% \end{matrix}
+% \right)
+% \left(
+% \begin{matrix}
+% R_1 \\
+% R_2 \\
+% \vdots \\
+% \vdots
+% \end{matrix}
+% \right)
+% \leq
+% \left(
+% \begin{matrix}
+% b_1 \\
+% 0 \\
+% b_2 \\
+% 0\\
+% \vdots
+% \end{matrix}
+% \right)
+% \label{eq:cur+}
+% \end{align}
+
+% \section{Different balancing strategies}
+% \label{sec:4}
+
+% Given that our solution vector $x$ contains information about not only
+% the flows, but also about the balancing and curtailment activities of
+% each node, the optimization is not only minimizing the square of the
+% flows, but also the mismatch correction at each node. The standard QP
+% cost function
+% \begin{align*}
+% C=xPx+qx
+% \end{align*}
+% reads in detail
+% \begin{align*}
+% C=\sum_l \left[P_F F_l^2+ q_F F_l\right]
+% +\sum_n \left[P_B B_n^2+ q_B B_n + P_R R_n^2 +q_R R_n\right]
+% \end{align*}
+% $P_F$ , $P_B$ and $P_R$ are the flow, balancing and curtailment
+% prizing in the quadratic component of $C$ and $q_F$ , $q_B$ and $q_R$
+% are linear ones. As we are interested in minimizing the square of the
+% flows and not in minimizing the flow along any one link in
+% particular, the linear cost of $F$ is set to zero ($q_F=0$). Likewise,
+% since we don't want to minimize the square of the
+% curtailment (as explained above), we set $P_R$ to zero as well. This
+% leaves us with
+% \begin{align*}
+% C=\sum_l P_F F_l^2 +\sum_n \left[P_B B_n^2 +q_B B_n+q_R R_n \right]
+% \end{align*}
+% By adjusting the remaining parameters, we can motivate one kind of
+% behavior over another. If, for instance, local balancing is cheaper
+% than flows, countries will prefer to balance their own loads, even if
+% their neighbors have excess power. Here, the parameters take different
+% values, depending on which scenario we wish to model.
+
+% \subsection{Weakly independent nodes}
+
+% This models the case where the nodes have to do their own balancing,
+% and receive no help from their neighbors apart from receiving their
+% renewables. The rules to follow are (in descending priority):
+% \begin{enumerate}
+% \item Sharing of renewable surplus
+% \item Own balancing
+% \item Own curtailment
+% \end{enumerate}
+% To remove the motivation to share balancing, $P_B$ is set to zero. In
+% order ensure that the renewable surplus is shared, the marginal cost
+% of transmitting one unit of energy between any two nodes $i$ and $j$
+% has to be lower than the marginal cost of producing it at the
+% destination with balancing plus the cost of curtailing it at the
+% origin. In other words 
+% \begin{align}
+% \frac{\partial C}{\partial F_{ij}} \stackrel{!}{<}
+% \frac{\partial C}{\partial B_j} +\frac{\partial C}{\partial R_i}
+% \label{eq:trans1}
+% \end{align}
+% which is in every case fulfilled if
+% \begin{align*}
+% 2P_F ( N-1) \Delta_0 < q_B + q_R,
+% \end{align*}
+% where the term $(N-1)\Delta_0$ represents the largest possible flow in
+% the network, built from the largest amount of mismatch $\Delta_0$
+% transferred at a given time and the maximum number of links that this flow
+% could travel through. In the quadratic parameters, we usually set $P_F
+% =1$. Theoretically, it shouldn't matter how $q_B$ and $q_R$ are chosen
+% in order to satisfy the inequality, as any balancing will automatically
+% imply curtailment if transfer could have been an option. To play
+% safe, we set both of them equal to the left side of the inequality.
+
+% \subsection{Weakly dependent nodes}
+
+% This models the case where nodes share the balancing duties whenever
+% there is a global negative mismatch, as opposed to leaving the
+% countries with a negative mismatch to balance it alone. While the total
+% balancing energy used will be the same in both cases, the total
+% balancing power installed in Europe will be lower in this case (though
+% perhaps higher for an individual, stable node than it would be in an
+% uncooperative scenario). The set of
+% rules is then
+% \begin{enumerate}
+% \item Sharing of renewable surplus
+% \item Sharing of balancing
+% \item Own balancing
+% \item Own curtailment
+% \end{enumerate}
+% In this scenario, we wish to reduce the
+% square of the balancing required in total, so that two countries
+% balancing a mismatch $M/2$ is preferable to a single one balancing
+% $M$. This implies bringing back the quadratic term $P_B$. The
+% condition that flow must be cheaper than balancing still holds, so the
+% inequality in \eqref{eq:trans1} still applies to this case. In
+% addition, we want to arrange it so that marginal cost of balancing at a
+% node $i$ which is already doing a large amount of balancing is higher
+% than the marginal cost of producing and bringing balancing from a less
+% used node $j$. That is
+% \begin{align*}
+% \frac{\partial C}{\partial B_i} 
+% &> \frac{\partial C}{\partial B_j}+\frac{\partial C}{\partial F_{ij}}\\
+% \text{where } \frac{\partial C}{\partial B_i}&=2P_B B_i +q_B \\
+% \text{and } \frac{\partial C}{\partial B_j}+\frac{\partial C}{\partial F_{ij}}
+% &=2P_B B_j +q_B+\sum_l  2P_F\Delta_0 \leq 2P_BB_j+q_B +2P_F(N-1)\Delta_0
+% \end{align*}
+% where, again, $(N-1)\Delta_0$ represents the maximal transferable
+% mismatch along the longest possible route. This inequality can
+% be simplified to
+% \begin{align}
+% \nonumber 2P_B B_i+q_B &> 2P_B B_j+q_B +2P_F( N-1)\Delta_0\\
+% \Leftrightarrow
+% P_B & > \frac{( N-1) P_F\Delta_0}{ B_i - B_j}
+% \label{eq:bals}
+% \end{align}
+% This means that, the more uneven the current balancing productions
+% between nodes $i$ and $j$ are, the (relatively) cheaper it will be to
+% transport power from $j$ to $i$ in comparison to balancing at
+% $i$. This term explodes as the balancing production in the two nodes
+% equals out, and $B_i=B_j$, so some tolerance level must be
+% introduced. We set this to $\Delta B=B_i - B_j\approx 1\rm\,MW$, and
+% then set $P_B$ accordingly.
+
+% We found that ensuring that inequality \eqref{eq:trans1} holds makes
+% the system behave as a weakly independent grid, and by further
+% asserting inequality \eqref{eq:bals}, we can make the system behave as
+% a weakly dependent grid.
+
+\section{Code walk-through and instructions}
+
+The following is a walk-through of the zdcpf.py script, as far
+as the version of \today \ is concerned. The code works with data
+stored on the group's Pepsi server, which requires a user name
+and password. Access is currently only for group members. Contact us for more information, and maybe we can come to an agreement. In order to access
+the database from outside the institute, just open an ssh tunnel to
+the database by typing 
+
+\noindent \texttt{ssh -L5432:localhost:5432 USERNAME@pepsi.imf.au.dk}
+
+\noindent into your terminal. Note that due to a brute force attack on
+the server, it was necessary to switch off the password identification
+when you login from a computer outside the Aarhus mathematics institute
+(IMF). You have to generate an ssh key pair, e.g. by running
+
+\noindent \texttt{ssh-keygen -t rsa -b 4096}
+
+and put the public key on pepsi with
+
+\noindent \texttt{scp ~/.ssh/id\_rsa.pub
+  <username>@pepsi.imf.au.dk:.ssh/authorized\_keys}
+
+\noindent (obviously, you have to do so from a computer which can
+still reach pepsi by password). Note that this overwrites any existing
+authorized keys. You can optionally specify a passphrase for your
+private key. Your (local) private key \texttt{~/.ssh/id\_rsa} is then required
+to log in, so copy it to any other computers you need to ssh to pepsi
+from.
+
+The code is written in
+Python and requires a number of modules to be installed for proper
+execution. These are: \texttt{numpy}, \texttt{sqlalchemy},
+\texttt{psycopg2}, \texttt{cvxopt}, \texttt{pylab},
+\texttt{matplotlib}, and \texttt{scipy}. Additionally, the group has
+been working under \texttt{ipython}, which somewhat simplifies the
+process of running scripts. This makes tests easier, but slows python
+down a bit and there is a known memory leak when generating a lot of
+histograms, what we actually do (see
+\url{http://old.nabble.com/memory-usage-%28leakage-%29-in-ipython-interactive-mode}
+\url{-td22345056.html}). So don't use it generally.
+
+First, you need to fetch the data you need from the server. You will
+find the necessary functions for this in the file
+\texttt{Database\_v2.py}. There you find for example the function 
+\texttt{get\_ISET\_country\_data}, which can be used to load data
+(wind and solar energy generation, load etc.) of a specific
+country. It first attempts to access the data locally by looking for a
+\texttt{data} folder, and if the data are not found, it tries to
+download them from the Pepsi server. These files are in numpy's own
+binary format, and contain the 70128 data points of load time series,
+as well as normalized values for offshore and onshore wind and solar
+generation for each region.
+
+Once you have the data, you will want to determine the flow time series
+in a specific setting. The bulk of the code for this purpose can be
+found in \texttt{zdcpf.py}. To execute, it needs additional input data
+in a folder which is by default called \texttt{settings}:
+\texttt{admat.txt}, in which the line capacities 
+between the European countries are listed as a matrix (data from
+ENTSO-E), and \texttt{ISET2ISO\_country\_codes.npy}, which is a binary
+file that contains the mapping of the ISET and ISO country codes to
+each other.
+
+Before running the code, we take a look at \texttt{zdcpf.py}. In the
+core of the algorithm stands the node class, defined in the first
+lines of the file. This is a type of object which we define
+to contain several vectors, matrices, and methods. When you declare a
+variable to be of type node, you must provide it with a path to a
+file, the file name, and an ID number. For example, defining a node
+\texttt{Norway} using data from N.npy would be done simply by saying
+
+\noindent
+\texttt{Norway=node('./data','N.npy',0)}. 
+
+The \texttt{Norway} variable now holds
+information on Norway's load, wind and solar production and values for
+gamma and alpha. Though it is technically possible to modify or
+extract the information directly from this object (for example, by
+typing \texttt{print Norway.wind} or \texttt{Norway.alpha=0.5}), doing so will
+bring up problems since when some variables like e.g. $\alpha$ are
+changed, other variables like e.g. the total renewable generation has
+to be changed as well to keep the 
+data consistent. Instead, it is better to use the
+functions that we have defined for these purposes, and which can be
+looked up in the class definition (for example \texttt{print
+  Norway.getwind()} and \texttt{Norway.setalpha(0.5)}).
+
+For convenience, there is also a class \texttt{Nodes}, which holds the
+set of all nodes in a specific calculation. Its default behavior is to
+include all European nodes upon construction.
+
+Next in the script, we meet the function \texttt{AtoKh}, which
+generates the incidence matrix $K$ and the flow capacity vector $h$
+(as of today) from the data in \texttt{admat.txt}. The node setup may
+be changed by changing the \texttt{admat.txt} file. Note, however,
+that you still must provide a data file for the each node and add it
+to the list of nodes in the script, or else the code will fail.
+
+\noindent
+\texttt{F = sdcpf(Nodes,admat,path\_to\_admat,copper,lapse,b,h)}
+
+executes the actual calculations for each point in the time
+series. The function receives Nodes, which is an instance of the
+\texttt{Nodes} class, the name of the admat file as well as its
+location, \texttt{copper} which is a
+switch to turn Europe into a copper plate, i.e. consider the
+transmission capacities as unlimited, \texttt{lapse} which is the
+number of time steps to consider, \texttt{b}, the scaling factor for
+the line capacities (default is one), and a line capacity constraint
+vector $h$ (defaults to today's capacities). It modifies the Nodes to
+contain the balancing and curtailment as calculated and returns the
+list of flows \texttt{F}.
+With these building blocks, one can simulate a series of scenarios,
+create loops that cycle through different $\alpha$ or $\gamma$ values,
+or constraints, or all.
+
+While this guide is not an user's guide, and does not aim at giving a
+full explanation of every line, we outline a simple example. One would,
+after opening an ssh tunnel to Pepsi, open ipython and cd to the
+directory where all the files are stored, then type
+
+\noindent \texttt{\%run Database\_v2.py \\
+get\_ISET\_country\_data('DK')
+}
+
+This will check whether the data file for Denmark is available and, if
+it is not, download the data files for all European countries.
+
+Then one can load all the functions for the power flow by 
+
+\noindent \texttt{\%run zdcpf.py
+}
+
+\noindent and then type
+
+\noindent \texttt{N=Nodes()\\
+F=sdcpf(N)
+}
+
+\noindent to start a default run. Alternatively, one can set some of the
+arguments of zdcpf to other values to modify the run to what one is
+interested is. For example, to sweep over various $\gamma$ values, one
+could type 
+
+\noindent \texttt{N=Nodes()\\
+gammas=[0.25,0.5,0.75]\\
+for i in range(len(gammas)):\\
+}
+\indent
+\texttt{N.set\_gammas(gammas[i])}\\
+\indent
+\texttt{F = sdcpf(N)}
+
+Note that each iteration overwrites the previous 70128 points in the
+Nodes and F variables, and so they must be saved at every
+iteration. For doubts, questions, comments, complaints and threats,
+email us @ {\verb rar@imf.au.dk }, or {\verb becker@fias.uni-frankfurt.de }
+
+\end{document}
